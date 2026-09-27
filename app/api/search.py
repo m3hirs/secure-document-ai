@@ -7,6 +7,8 @@ from app.db.database import get_db
 from app.schemas.search import DocumentSearchRequest, DocumentSearchResponse, SemanticSearchRequest, SemanticSearchResponse
 from app.services.document_search_service import search_documents as search_document_results
 from app.services.natural_search_parser import parse_query
+from app.services.entity_presence_service import resolve_authorized_named_target
+from app.services.rag_service import classify_rag_intent
 from app.services.semantic_search_service import semantic_search
 
 router = APIRouter(tags=["search"])
@@ -16,8 +18,24 @@ def search_documents(payload: SemanticSearchRequest, db: Session = Depends(get_d
     settings = get_settings()
     if payload.top_k is not None and payload.top_k > settings.semantic_search_max_top_k:
         raise HTTPException(422, "top_k exceeds configured maximum")
-    results = semantic_search(db, principal.user_id, payload.query, payload.top_k)
-    return {"results": results, "message": None if results else "No accessible matching documents found."}
+    intent = classify_rag_intent(payload.query)
+    document_ids = None
+    if intent.kind == "named_document":
+        resolution = resolve_authorized_named_target(db, principal.user_id, intent.entity or "")
+        if not resolution.document_ids:
+            return {"results": [], "message": "No relevant documents found."}
+        document_ids = resolution.document_ids
+    if document_ids is None:
+        results = semantic_search(db, principal.user_id, payload.query, payload.top_k)
+    else:
+        results = semantic_search(
+            db,
+            principal.user_id,
+            payload.query,
+            payload.top_k,
+            document_ids=document_ids,
+        )
+    return {"results": results, "message": None if results else "No relevant documents found."}
 
 @router.post("/search/documents", response_model=DocumentSearchResponse)
 def natural_document_search(payload:DocumentSearchRequest, db:Session=Depends(get_db), principal:Principal=Depends(get_current_principal)):
@@ -30,4 +48,4 @@ def natural_document_search(payload:DocumentSearchRequest, db:Session=Depends(ge
         text,score=semantic if semantic else (None,None)
         results.append({"document_id":document.id,"filename":document.filename,"classification":document.classification.name if document.classification else None,"uploaded_at":document.uploaded_at,"uploader_name":document.uploader.name if document.uploader else None,"file_type":document.file_type,"page_number":page_number,"chunk_id":chunk_id,"snippet":text,"similarity_score":score})
     filters={key:value for key,value in {"file_type":parsed.file_type,"uploader_id":parsed.uploader_id,"team_id":parsed.team_id,"classification_id":parsed.classification_id,"tag_id":parsed.tag_id,"uploaded_after":parsed.start,"uploaded_before":parsed.end}.items() if value is not None}
-    return {"mode":parsed.mode,"applied_filters":filters,"results":results,"page":payload.page,"page_size":payload.page_size,"total_returned":len(results),"message":None if results else "No accessible matching documents found."}
+    return {"mode":parsed.mode,"applied_filters":filters,"results":results,"page":payload.page,"page_size":payload.page_size,"total_returned":len(results),"message":None if results else "No relevant documents found."}

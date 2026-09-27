@@ -26,6 +26,7 @@ from app.db.models import (
     Tag,
     Team,
     User,
+    UserDocumentPreference,
     UserSession,
     document_tags,
     document_teams,
@@ -69,6 +70,7 @@ def authorization_db():
         Tag.__table__,
         user_teams,
         Document.__table__,
+        UserDocumentPreference.__table__,
         document_tags,
         document_teams,
         DocumentPage.__table__,
@@ -436,12 +438,47 @@ def test_upload_ignores_client_uploader_and_uses_principal(authorized_client):
             "/documents/upload",
             data={
                 "classification_id": "401",
+                "team_ids": "201",
                 "uploaded_by": str(DESIGN_USER_ID),
             },
             files={"file": ("test.pdf", BytesIO(b"%PDF-1.4"), "application/pdf")},
         )
     assert response.status_code == 201
     assert upload.call_args.args[2] == SOFTWARE_USER_ID
+
+
+def test_upload_rejects_missing_team_selection(authorized_client):
+    client, _, _ = authorized_client
+    with patch("app.api.documents._upload_one") as upload:
+        response = client.post(
+            "/documents/upload",
+            data={"classification_id": "401"},
+            files={"file": ("test.pdf", BytesIO(b"%PDF-1.4"), "application/pdf")},
+        )
+    assert response.status_code == 422
+    upload.assert_not_called()
+
+
+def test_upload_rejects_team_outside_principal_membership(authorized_client):
+    client, _, _ = authorized_client
+    response = client.post(
+        "/documents/upload",
+        data={"classification_id": "401", "team_ids": "202"},
+        files={"file": ("test.pdf", BytesIO(b"%PDF-1.4"), "application/pdf")},
+    )
+    assert response.status_code == 403
+
+
+def test_bulk_upload_rejects_team_outside_principal_membership_before_processing(authorized_client):
+    client, _, _ = authorized_client
+    with patch("app.api.documents._upload_one") as upload:
+        response = client.post(
+            "/documents/upload-bulk",
+            data={"classification_id": "401", "team_ids": "202"},
+            files=[("files", ("test.pdf", BytesIO(b"%PDF-1.4"), "application/pdf"))],
+        )
+    assert response.status_code == 403
+    upload.assert_not_called()
 
 
 def test_mutation_csrf_and_origin_are_enforced(authorization_db, monkeypatch):
@@ -480,6 +517,14 @@ def test_mutation_csrf_and_origin_are_enforced(authorization_db, monkeypatch):
                 headers={"Origin": ORIGIN, "X-CSRF-Token": created.csrf_token},
             )
         assert response.status_code == 200
+        archive_path = f"/documents/{ACCESSIBLE_DOCUMENT_ID}/archive"
+        assert client.post(archive_path, json={}).status_code == 403
+        archive_response = client.post(
+            archive_path,
+            json={},
+            headers={"Origin": ORIGIN, "X-CSRF-Token": created.csrf_token},
+        )
+        assert archive_response.status_code == 200
     finally:
         client.close()
         app.dependency_overrides.clear()
@@ -520,6 +565,8 @@ def test_openapi_removes_uploader_identity_and_documents_csrf_policy():
         ("/documents/upload-bulk", "post"),
         ("/documents/{document_id}/rechunk", "post"),
         ("/documents/{document_id}/embed", "post"),
+        ("/documents/{document_id}/archive", "post"),
+        ("/documents/{document_id}/restore", "post"),
         ("/auth/logout", "post"),
     ]
     for path, method in persistent_mutations:
@@ -618,6 +665,7 @@ def test_user_and_team_directory_is_authenticated_and_safe(authorized_client):
     teams = client.get("/teams")
     assert users.status_code == 200
     assert teams.status_code == 200
+    assert [team["id"] for team in teams.json()] == [201]
     forbidden_fields = {
         "password_hash",
         "password_changed_at",

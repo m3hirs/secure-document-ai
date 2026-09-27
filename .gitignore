@@ -33,3 +33,7 @@ frontend/.env.*.local
 
 .codex-pytest-temp-*/
 .pytest-tmp-*/
+
+.pytest-stage10*/
+
+.pytest-archive-*/

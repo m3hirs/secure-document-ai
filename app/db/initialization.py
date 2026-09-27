@@ -1,6 +1,7 @@
 """Transitional non-destructive schema initialization for local development.
 
-Alembic is the migration source of truth for Stage 9 authentication schema.
+Alembic is the migration source of truth for authentication and per-user
+document preference schema.
 ``create_all`` remains temporarily for compatibility with an existing schema,
 but excludes authentication tables and refuses an empty-schema bootstrap.
 Remove startup DDL after all deployed databases are managed and stamped by
@@ -39,7 +40,7 @@ def _startup_managed_tables():
     return tuple(
         table
         for table in Base.metadata.sorted_tables
-        if table.name != "user_sessions"
+        if table.name not in {"user_sessions", "user_document_preferences"}
     )
 
 
@@ -52,8 +53,8 @@ def initialize_database() -> None:
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     # Existing tables are not altered by create_all, so the new nullable auth
-    # columns remain Alembic-owned. Explicitly excluding user_sessions prevents
-    # startup from creating the new authentication table before its revision.
+    # columns remain Alembic-owned. Explicit exclusions prevent startup from
+    # creating migration-owned tables before their reviewed revisions.
     Base.metadata.create_all(engine, tables=_startup_managed_tables())
     with engine.begin() as connection:
         for name, definition in _DOCUMENT_COLUMNS.items():

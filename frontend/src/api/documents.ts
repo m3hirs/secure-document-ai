@@ -10,12 +10,17 @@ import type {
 } from "../types/document";
 import { apiRequest } from "./client";
 
-export function listDocuments(signal?: AbortSignal): Promise<DocumentRead[]> {
-  return apiRequest<DocumentRead[]>("/documents", { signal });
+export function listDocuments(options: { includeArchived?: boolean; signal?: AbortSignal } = {}): Promise<DocumentRead[]> {
+  const query = options.includeArchived ? "?include_archived=true" : "";
+  return apiRequest<DocumentRead[]>(`/documents${query}`, { signal: options.signal });
 }
 
 export function listClassifications(signal?: AbortSignal): Promise<{ id: number; name: string }[]> {
   return apiRequest<{ id: number; name: string }[]>("/classifications", { signal });
+}
+
+export function listTeams(signal?: AbortSignal): Promise<{ id: number; name: string }[]> {
+  return apiRequest<{ id: number; name: string }[]>("/teams", { signal });
 }
 
 export function getDocument(documentId: number, signal?: AbortSignal): Promise<DocumentRead> {
@@ -58,7 +63,7 @@ function uploadForm(files: File[], options: UploadOptions, fieldName: "file" | "
   const form = new FormData();
   for (const file of files) form.append(fieldName, file);
   form.append("classification_id", String(options.classificationId));
-  if (options.teamIds?.trim()) form.append("team_ids", options.teamIds.trim());
+  form.append("team_ids", options.teamIds.join(","));
   return form;
 }
 
@@ -97,5 +102,21 @@ export function embedDocument(documentId: number, csrfToken: string): Promise<Em
   return apiRequest<EmbeddingRead>(`/documents/${documentId}/embed`, {
     method: "POST",
     headers: { "X-CSRF-Token": csrfToken },
+  });
+}
+
+export function archiveDocument(documentId: number, csrfToken: string): Promise<DocumentRead> {
+  return apiRequest<DocumentRead>(`/documents/${documentId}/archive`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({}),
+  });
+}
+
+export function restoreDocument(documentId: number, csrfToken: string): Promise<DocumentRead> {
+  return apiRequest<DocumentRead>(`/documents/${documentId}/restore`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({}),
   });
 }

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     embedding_version: str = "e5-small-v1"
     semantic_search_top_k: int = 10
     semantic_search_max_top_k: int = 50
+    semantic_search_min_similarity: float = 0.81
     app_environment: str = "development"
     app_timezone: str = "Asia/Kolkata"
     session_cookie_name: str = "secure_document_session"
@@ -44,6 +45,8 @@ class Settings(BaseSettings):
             raise ValueError("EMBEDDING_DIMENSION must be 384 and EMBEDDING_BATCH_SIZE must be positive")
         if self.semantic_search_top_k <= 0 or self.semantic_search_max_top_k <= 0 or self.semantic_search_top_k > self.semantic_search_max_top_k:
             raise ValueError("semantic search limits must be positive and default top_k cannot exceed max_top_k")
+        if not 0.0 <= self.semantic_search_min_similarity <= 1.0:
+            raise ValueError("SEMANTIC_SEARCH_MIN_SIMILARITY must be between 0 and 1")
         return self
 
     @model_validator(mode="after")

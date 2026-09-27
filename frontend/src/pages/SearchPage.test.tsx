@@ -80,11 +80,11 @@ describe("authorized search", () => {
 
   it("shows the no-results state", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ results: [], message: "No accessible matching documents found." }),
+      jsonResponse({ results: [], message: "No relevant documents found." }),
     );
     render(<SearchPage onOpenDocument={vi.fn()} />);
     await submitSearch("missing topic");
-    expect(await screen.findByText("No accessible results found")).toBeVisible();
+    expect(await screen.findByText("No relevant documents found")).toBeVisible();
   });
 
   it("shows a loading state and prevents duplicate submissions", async () => {
@@ -97,7 +97,7 @@ describe("authorized search", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Searching authorized documents");
     expect(screen.getByRole("button", { name: "Searching…" })).toBeEnabled();
     resolveRequest?.(jsonResponse({ results: [], message: null }));
-    expect(await screen.findByText("No accessible results found")).toBeVisible();
+    expect(await screen.findByText("No relevant documents found")).toBeVisible();
   });
 
   it("aborts the obsolete request when a newer search is submitted", async () => {
@@ -117,7 +117,7 @@ describe("authorized search", () => {
     await user.click(screen.getByRole("button", { name: "Searching…" }));
     expect(firstSignal?.aborted).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(await screen.findByText("No accessible results found")).toBeVisible();
+    expect(await screen.findByText("No relevant documents found")).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 

@@ -8,6 +8,15 @@ from typing import Sequence
 from sqlalchemy.orm import Session
 
 from app.schemas.rag import RagAnswerRead, RagSourceRead
+from app.services.entity_presence_service import (
+    detect_entity_count_question,
+    detect_entity_presence_question,
+    detect_named_target_question,
+    matching_literal_text,
+    resolve_authorized_named_target,
+    search_authorized_entity_count,
+    search_authorized_entity_presence,
+)
 from app.services.llm_service import (
     CONSERVATIVE_CHARS_PER_TOKEN,
     MODEL_NAME,
@@ -155,11 +164,22 @@ class RagContext:
     sources: list[RagSourceRead]
 
 
+@dataclass(frozen=True)
+class RagIntent:
+    """Internal, precedence-resolved routing decision for one question."""
+
+    kind: str
+    entity: str | None = None
+    document_kind: str | None = None
+    category: str | None = None
+
+
 def retrieve_authorized_passages(
     db: Session,
     user_id: int,
     question: str,
     top_k: int = 5,
+    document_ids: Sequence[int] | None = None,
 ) -> list[RagSourceRead]:
     """Return only SQL-authorized semantic passages with stable source IDs.
 
@@ -169,13 +189,22 @@ def retrieve_authorized_passages(
     if top_k < 1 or top_k > 10:
         raise ValueError("top_k must be between 1 and 10")
 
-    results = semantic_search(
-        db=db,
-        user_id=user_id,
-        query=question,
-        top_k=top_k,
-    )
+    search_arguments = {
+        "db": db,
+        "user_id": user_id,
+        "query": question,
+        "top_k": top_k,
+    }
+    if document_ids is not None:
+        search_arguments["document_ids"] = document_ids
+    results = semantic_search(**search_arguments)
 
+    allowed_document_ids = set(document_ids) if document_ids is not None else None
+    retained_results = [
+        result
+        for result in results
+        if allowed_document_ids is None or result.document_id in allowed_document_ids
+    ]
     return [
         RagSourceRead(
             source_id=f"S{index}",
@@ -186,7 +215,7 @@ def retrieve_authorized_passages(
             snippet=result.chunk_text,
             similarity=result.similarity_score,
         )
-        for index, result in enumerate(results, start=1)
+        for index, result in enumerate(retained_results, start=1)
     ]
 
 
@@ -251,6 +280,27 @@ def classify_question_category(question: str) -> str | None:
     if len(matched_categories) != 1:
         return None
     return next(iter(matched_categories))
+
+
+def classify_rag_intent(question: str) -> RagIntent:
+    """Classify once, with deterministic intents taking precedence over RAG."""
+    count = detect_entity_count_question(question)
+    if count is not None:
+        return RagIntent("entity_count", count.entity, count.document_kind)
+
+    presence = detect_entity_presence_question(question)
+    if presence is not None:
+        return RagIntent("entity_presence", presence.entity)
+
+    named = detect_named_target_question(question)
+    if named is not None:
+        return RagIntent("named_document", named.entity)
+
+    category = classify_question_category(question)
+    if category is not None:
+        return RagIntent("category", category=category)
+
+    return RagIntent("general")
 
 
 def _normalize_evidence_text(value: str) -> str:
@@ -540,12 +590,127 @@ def answer_question(
     if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 10:
         raise ValueError("top_k must be between 1 and 10")
 
-    passages = retrieve_authorized_passages(
-        db=db,
-        user_id=user_id,
-        question=question,
-        top_k=top_k,
-    )
+    intent = classify_rag_intent(question)
+    if intent.kind == "entity_count":
+        assert intent.entity is not None and intent.document_kind is not None
+        count_result = search_authorized_entity_count(
+            db=db,
+            user_id=user_id,
+            entity=intent.entity,
+            source_limit=top_k,
+        )
+        display_entity = intent.entity
+        if count_result.sources:
+            display_entity = (
+                matching_literal_text(intent.entity, count_result.sources[0].snippet)
+                or intent.entity
+            )
+        if not count_result.exhaustive:
+            verified_count = count_result.verified_document_count
+            if verified_count > 0:
+                verified_noun = (
+                    intent.document_kind
+                    if verified_count == 1
+                    else f"{intent.document_kind}s"
+                )
+                answer = (
+                    f"I found {verified_count} verified accessible {verified_noun} "
+                    f"containing the exact text '{display_entity}', but I cannot "
+                    "determine the complete count because some accessible documents "
+                    "have not been fully processed."
+                )
+            else:
+                answer = (
+                    f"I found no verified match for '{display_entity}' in the fully "
+                    "processed accessible documents, but I cannot determine the "
+                    "complete count because some accessible documents have not been "
+                    "fully processed."
+                )
+            return RagAnswerRead(
+                answer=answer,
+                sources=count_result.sources,
+                model="deterministic-lexical",
+                insufficient_evidence=True,
+            )
+        if count_result.matching_document_count > 0 and not count_result.sources:
+            # The page corpus matched, but no exact matching chunk can safely
+            # back the public result with verified source metadata.
+            return _insufficient_evidence_response()
+        count = count_result.matching_document_count
+        noun = intent.document_kind if count == 1 else f"{intent.document_kind}s"
+        verb = "contains" if count == 1 else "contain"
+        if count == 0:
+            answer = (
+                f"No active accessible {intent.document_kind} contains the exact text "
+                f"'{display_entity}'."
+            )
+        else:
+            answer = (
+                f"{count} accessible {noun} {verb} the exact text "
+                f"'{display_entity}'."
+            )
+        return RagAnswerRead(
+            answer=answer,
+            sources=count_result.sources,
+            model="deterministic-lexical",
+            insufficient_evidence=False,
+        )
+
+    if intent.kind == "entity_presence":
+        assert intent.entity is not None
+        presence_result = search_authorized_entity_presence(
+            db=db,
+            user_id=user_id,
+            entity=intent.entity,
+            source_limit=top_k,
+        )
+        if presence_result.sources:
+            return RagAnswerRead(
+                answer=(
+                    "Yes. An accessible document contains the exact text "
+                    f"'{intent.entity}'."
+                ),
+                sources=presence_result.sources,
+                model="deterministic-lexical",
+                insufficient_evidence=False,
+            )
+        if presence_result.entity_found:
+            # Exact page evidence exists, but no matching authorized chunk can
+            # safely back a public source card. Do not assert either outcome.
+            return _insufficient_evidence_response()
+        if presence_result.exhaustive:
+            return RagAnswerRead(
+                answer=(
+                    "No accessible document contains the exact text "
+                    f"'{intent.entity}'."
+                ),
+                sources=[],
+                model="deterministic-lexical",
+                insufficient_evidence=False,
+            )
+        return _insufficient_evidence_response()
+
+    named_document_ids: tuple[int, ...] | None = None
+    if intent.kind == "named_document":
+        assert intent.entity is not None
+        resolution = resolve_authorized_named_target(
+            db=db,
+            user_id=user_id,
+            entity=intent.entity,
+        )
+        if not resolution.document_ids:
+            return _insufficient_evidence_response()
+        named_document_ids = resolution.document_ids
+
+    retrieval_arguments = {
+        "db": db,
+        "user_id": user_id,
+        "question": question,
+        "top_k": top_k,
+    }
+    if named_document_ids is not None:
+        retrieval_arguments["document_ids"] = named_document_ids
+    passages = retrieve_authorized_passages(**retrieval_arguments)
     selected_context = select_rag_context(passages, question)
 
     if not selected_context.context:
@@ -555,7 +720,7 @@ def answer_question(
         source.source_id
         for source in selected_context.sources
     ]
-    requested_category = classify_question_category(question)
+    requested_category = intent.category if intent.kind == "category" else None
 
     if requested_category is None:
         model_output = generate_local_structured_answer(

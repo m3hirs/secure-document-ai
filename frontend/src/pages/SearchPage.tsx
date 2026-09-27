@@ -148,7 +148,7 @@ export function SearchPage({ onOpenDocument }: SearchPageProps) {
         {loading && <LoadingState>Searching authorized documents…</LoadingState>}
         {error && <ErrorMessage>{error}</ErrorMessage>}
         {!loading && !error && results === null && <EmptyState title="Start an authorized search" description="Results and snippets stay in this browser session only." />}
-        {!loading && !error && results?.length === 0 && <EmptyState title="No accessible results found" description={message || "Try a different query or search mode."} />}
+        {!loading && !error && results?.length === 0 && <EmptyState title="No relevant documents found" description={message || "Try a different query or search mode."} />}
         {!loading && !error && results && results.length > 0 && (
           <div>
             <div className="mb-3 flex items-center justify-between gap-3"><p className="text-sm font-semibold text-slate-800">{results.length} result{results.length === 1 ? "" : "s"}</p>{resolvedMode && <StatusBadge>{resolvedMode} mode</StatusBadge>}</div>

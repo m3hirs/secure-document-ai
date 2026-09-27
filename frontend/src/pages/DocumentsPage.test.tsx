@@ -16,6 +16,7 @@ const document = {
   uploader: { id: 7, name: "Ava Patel" },
   tags: [{ id: 5, name: "Architecture" }],
   teams: [{ id: 2, name: "Software" }],
+  is_archived: false,
 };
 
 const processing = {
@@ -55,7 +56,10 @@ function detailResponse(path: string) {
   return null;
 }
 
-function renderDocuments(csrfToken: string | null = "csrf-in-memory") {
+function renderDocuments(
+  csrfToken: string | null = "csrf-in-memory",
+  props: { initialDocumentId?: number | null; onExitDetails?: () => void; onArchiveComplete?: () => void } = {},
+) {
   const value: AuthContextValue = {
     user: { id: 7, name: "Ava Patel", email: "ava@example.com", is_active: true },
     csrfToken,
@@ -66,7 +70,7 @@ function renderDocuments(csrfToken: string | null = "csrf-in-memory") {
     login: vi.fn(),
     logout: vi.fn(),
   };
-  return render(<AuthContext.Provider value={value}><DocumentsPage /></AuthContext.Provider>);
+  return render(<AuthContext.Provider value={value}><DocumentsPage {...props} /></AuthContext.Provider>);
 }
 
 describe("document management", () => {
@@ -116,6 +120,7 @@ describe("document management", () => {
       const path = requestPath(input);
       if (path === "/documents") return jsonResponse([document]);
       if (path === "/classifications") return jsonResponse([{ id: 3, name: "Engineering" }]);
+      if (path === "/teams") return jsonResponse([{ id: 2, name: "Software" }]);
       const signal = options?.signal;
       if (signal) detailSignals.push(signal);
       return new Promise<Response>((_resolve, reject) => {
@@ -135,6 +140,7 @@ describe("document management", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
       const path = requestPath(input);
       if (path === "/classifications") return jsonResponse([{ id: 3, name: "Engineering" }]);
+      if (path === "/teams") return jsonResponse([{ id: 2, name: "Software" }, { id: 4, name: "Machine Learning" }]);
       if (path === "/documents/upload") return jsonResponse({ ...processing, filename: "safe.pdf" }, 201);
       if (path === "/documents") return jsonResponse([]);
       return jsonResponse({}, 500);
@@ -144,7 +150,7 @@ describe("document management", () => {
     const file = new File(["%PDF-safe-test"], "safe.pdf", { type: "application/pdf" });
     await user.upload(screen.getByLabelText("PDF files"), file);
     await user.selectOptions(await screen.findByLabelText("Classification"), "3");
-    await user.type(screen.getByLabelText("Team IDs"), "2");
+    await user.selectOptions(await screen.findByLabelText("Teams"), "2");
     await user.click(screen.getByRole("button", { name: "Upload selected" }));
     expect(await screen.findByRole("status")).toHaveTextContent("safe.pdf: processed");
 
@@ -156,6 +162,23 @@ describe("document management", () => {
     expect(form.has("user_id")).toBe(false);
     expect(form.has("uploaded_by")).toBe(false);
     expect(new Headers(options.headers).get("X-CSRF-Token")).toBe("csrf-in-memory");
+  });
+
+  it("requires a named team selection before upload", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = requestPath(input);
+      if (path === "/classifications") return jsonResponse([{ id: 3, name: "Engineering" }]);
+      if (path === "/teams") return jsonResponse([{ id: 2, name: "Software" }]);
+      if (path === "/documents") return jsonResponse([]);
+      return jsonResponse({}, 500);
+    });
+    renderDocuments();
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText("PDF files"), new File(["%PDF"], "safe.pdf", { type: "application/pdf" }));
+    await user.selectOptions(await screen.findByLabelText("Classification"), "3");
+    await user.click(screen.getByRole("button", { name: "Upload selected" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("at least one team");
+    expect(fetchMock.mock.calls.some(([input]) => requestPath(input) === "/documents/upload")).toBe(false);
   });
 
   it("disables document mutations when CSRF capability is unavailable", async () => {
@@ -212,5 +235,84 @@ describe("document management", () => {
     await user.click(screen.getByRole("button", { name: "Confirm rechunk" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("security or permission policy");
     expect(screen.getByText("Document #11")).toBeVisible();
+  });
+
+  it("removes an authorized document from only the current workspace after confirmation", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = requestPath(input);
+      if (path === "/documents/11/archive") return jsonResponse({ ...document, is_archived: true });
+      if (path === "/documents") return jsonResponse([document]);
+      if (path === "/classifications") return jsonResponse([{ id: 3, name: "Engineering" }]);
+      return detailResponse(path) ?? jsonResponse({}, 500);
+    });
+    renderDocuments("csrf-in-memory", { initialDocumentId: 11 });
+    const user = userEvent.setup();
+    await screen.findByText("Document #11");
+    await user.click(screen.getByRole("button", { name: "Remove from my workspace" }));
+    expect(screen.getByText("Remove this document from your workspace? This will not delete the document for other authorized users.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Confirm removal" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Document removed from your workspace.");
+    expect(screen.queryByRole("button", { name: "architecture.pdf" })).not.toBeInTheDocument();
+
+    const archiveCall = fetchMock.mock.calls.find(([input]) => requestPath(input) === "/documents/11/archive");
+    const options = archiveCall?.[1] as RequestInit;
+    expect(options.method).toBe("POST");
+    expect(new Headers(options.headers).get("X-CSRF-Token")).toBe("csrf-in-memory");
+    expect(JSON.parse(String(options.body))).toEqual({});
+    expect(String(options.body)).not.toContain("user_id");
+  });
+
+  it("shows the current user's archived documents and restores one with CSRF", async () => {
+    const archivedDocument = { ...document, is_archived: true };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/documents/11/restore") return jsonResponse(document);
+      if (url.pathname === "/documents" && url.searchParams.get("include_archived") === "true") return jsonResponse([archivedDocument]);
+      if (url.pathname === "/documents") return jsonResponse([document]);
+      if (url.pathname === "/classifications") return jsonResponse([{ id: 3, name: "Engineering" }]);
+      return jsonResponse({}, 500);
+    });
+    renderDocuments();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Archived" }));
+    expect(await screen.findByRole("button", { name: "Restore" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Document restored to your workspace.");
+    expect(screen.queryByRole("button", { name: "architecture.pdf" })).not.toBeInTheDocument();
+    const restoreCall = fetchMock.mock.calls.find(([input]) => requestPath(input) === "/documents/11/restore");
+    expect(new Headers(restoreCall?.[1]?.headers).get("X-CSRF-Token")).toBe("csrf-in-memory");
+  });
+
+  it("preserves authenticated document UI when archive is rejected with 403", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = requestPath(input);
+      if (path === "/documents/11/archive") return jsonResponse({ detail: "Forbidden" }, 403);
+      if (path === "/documents") return jsonResponse([document]);
+      if (path === "/classifications") return jsonResponse([{ id: 3, name: "Engineering" }]);
+      return detailResponse(path) ?? jsonResponse({}, 500);
+    });
+    renderDocuments("csrf-in-memory", { initialDocumentId: 11 });
+    const user = userEvent.setup();
+    await screen.findByText("Document #11");
+    await user.click(screen.getByRole("button", { name: "Remove from my workspace" }));
+    await user.click(screen.getByRole("button", { name: "Confirm removal" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("security or permission policy");
+    expect(screen.getByText("Document #11")).toBeVisible();
+  });
+
+  it("uses generic unavailable wording when archive returns 404", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = requestPath(input);
+      if (path === "/documents/11/archive") return jsonResponse({ detail: "Document not found" }, 404);
+      if (path === "/documents") return jsonResponse([document]);
+      if (path === "/classifications") return jsonResponse([{ id: 3, name: "Engineering" }]);
+      return detailResponse(path) ?? jsonResponse({}, 500);
+    });
+    renderDocuments("csrf-in-memory", { initialDocumentId: 11 });
+    const user = userEvent.setup();
+    await screen.findByText("Document #11");
+    await user.click(screen.getByRole("button", { name: "Remove from my workspace" }));
+    await user.click(screen.getByRole("button", { name: "Confirm removal" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Document not found or unavailable.");
   });
 });

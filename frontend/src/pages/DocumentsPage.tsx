@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
+  archiveDocument,
   embedDocument,
   getDocumentDetails,
   listClassifications,
   listDocuments,
+  listTeams,
   rechunkDocument,
+  restoreDocument,
   uploadDocument,
   uploadDocuments,
 } from "../api/documents";
@@ -58,9 +61,11 @@ function safeError(error: unknown, fallback: string) {
 interface DocumentsPageProps {
   initialDocumentId?: number | null;
   onExitDetails?: () => void;
+  onArchiveComplete?: () => void;
+  initialSuccessMessage?: string | null;
 }
 
-export function DocumentsPage({ initialDocumentId = null, onExitDetails }: DocumentsPageProps) {
+export function DocumentsPage({ initialDocumentId = null, onExitDetails, onArchiveComplete, initialSuccessMessage = null }: DocumentsPageProps) {
   const { csrfToken } = useAuth();
   const [documents, setDocuments] = useState<DocumentRead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,26 +79,34 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
   const [classificationId, setClassificationId] = useState("");
   const [classifications, setClassifications] = useState<{ id: number; name: string }[]>([]);
   const [classificationError, setClassificationError] = useState<string | null>(null);
-  const [teamIds, setTeamIds] = useState("");
+  const [teams, setTeams] = useState<{ id: number; name: string }[]>([]);
+  const [selectedTeamIds, setSelectedTeamIds] = useState<number[]>([]);
+  const [teamError, setTeamError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadResults, setUploadResults] = useState<ProcessingRead[]>([]);
   const [mutation, setMutation] = useState<"rechunk" | "embed" | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [pendingMutation, setPendingMutation] = useState<"rechunk" | "embed" | null>(null);
+  const [preferenceAction, setPreferenceAction] = useState<"archive" | "restore" | null>(null);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(initialSuccessMessage);
+  const [documentView, setDocumentView] = useState<"active" | "archived">("active");
   const detailsController = useRef<AbortController | null>(null);
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
     setListError(null);
     try {
-      setDocuments(await listDocuments());
+      const listed = await listDocuments({ includeArchived: documentView === "archived" });
+      setDocuments(documentView === "archived" ? listed.filter((document) => document.is_archived) : listed);
     } catch (error) {
       setListError(safeError(error, "Documents could not be loaded."));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [documentView]);
 
   const loadDetails = useCallback(async (documentId: number) => {
     detailsController.current?.abort();
@@ -121,14 +134,12 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
 
   useEffect(() => {
     const controller = new AbortController();
-    void listClassifications(controller.signal)
-      .then((items) => {
-        setClassifications(items);
-        setClassificationError(null);
-      })
-      .catch((error: unknown) => {
-        if (!isAbortError(error)) setClassificationError(safeError(error, "Classifications could not be loaded."));
-      });
+    void Promise.allSettled([listClassifications(controller.signal), listTeams(controller.signal)]).then(([classificationResult, teamResult]) => {
+      if (classificationResult.status === "fulfilled") { setClassifications(classificationResult.value); setClassificationError(null); }
+      else if (!isAbortError(classificationResult.reason)) setClassificationError(safeError(classificationResult.reason, "Classifications could not be loaded."));
+      if (teamResult.status === "fulfilled") { setTeams(teamResult.value); setTeamError(null); }
+      else if (!isAbortError(teamResult.reason)) setTeamError(safeError(teamResult.reason, "Teams could not be loaded."));
+    });
     return () => controller.abort();
   }, []);
 
@@ -157,13 +168,13 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
       setUploadError("Secure session controls are unavailable. Refresh or sign in again.");
       return;
     }
-    if (!Number.isInteger(parsedClassification) || parsedClassification < 1 || files.length === 0) {
-      setUploadError("Choose at least one PDF and a valid classification.");
+    if (!Number.isInteger(parsedClassification) || parsedClassification < 1 || files.length === 0 || selectedTeamIds.length === 0) {
+      setUploadError("Choose at least one PDF, a valid classification, and at least one team.");
       return;
     }
     setUploading(true);
     try {
-      const options = { classificationId: parsedClassification, teamIds };
+      const options = { classificationId: parsedClassification, teamIds: selectedTeamIds };
       const results =
         files.length === 1
           ? [await uploadDocument(files[0], options, csrfToken)]
@@ -195,6 +206,33 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
     }
   }
 
+  async function runPreferenceAction(kind: "archive" | "restore", documentId = selectedId) {
+    if (!documentId || !csrfToken) return;
+    setPreferenceBusy(true);
+    setPreferenceError(null);
+    try {
+      const updated = kind === "archive"
+        ? await archiveDocument(documentId, csrfToken)
+        : await restoreDocument(documentId, csrfToken);
+      setDocuments((current) => current.filter((document) => document.id !== documentId));
+      setSuccessMessage(kind === "archive" ? "Document removed from your workspace." : "Document restored to your workspace.");
+      if (details?.document.id === documentId) {
+        setDetails({ ...details, document: updated });
+      }
+      if (kind === "archive") {
+        setSelectedId(null);
+        setDetails(null);
+        if (onArchiveComplete) onArchiveComplete();
+        else onExitDetails?.();
+      }
+    } catch (error) {
+      setPreferenceError(safeError(error, `The document could not be ${kind === "archive" ? "removed" : "restored"}.`));
+    } finally {
+      setPreferenceBusy(false);
+      setPreferenceAction(null);
+    }
+  }
+
   if (selectedId !== null) {
     return (
       <div className="mx-auto max-w-7xl">
@@ -210,8 +248,18 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Document #{details.document.id}</p>
                 <h2 className="mt-2 break-words text-2xl font-semibold tracking-tight text-slate-950">{details.document.filename}</h2>
                 <p className="mt-2 text-sm text-slate-600">Uploaded {formatDate(details.document.uploaded_at)} by {details.document.uploader.name}</p>
+                {details.document.is_archived && <p className="mt-3 inline-flex rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">Archived from your workspace</p>}
               </div>
               <div className="flex flex-wrap gap-2">
+                {details.document.is_archived ? (
+                  <button type="button" disabled={!csrfToken || preferenceBusy} onClick={() => setPreferenceAction("restore")} className="rounded-lg border border-sky-300 px-3.5 py-2 text-sm font-semibold text-sky-800 disabled:cursor-not-allowed disabled:opacity-50">
+                    {preferenceBusy ? "Restoring…" : "Restore to my workspace"}
+                  </button>
+                ) : (
+                  <button type="button" disabled={!csrfToken || preferenceBusy} onClick={() => setPreferenceAction("archive")} className="rounded-lg border border-red-300 px-3.5 py-2 text-sm font-semibold text-red-800 disabled:cursor-not-allowed disabled:opacity-50">
+                    Remove from my workspace
+                  </button>
+                )}
                 <button type="button" disabled={!csrfToken || mutation !== null} onClick={() => setPendingMutation("rechunk")} className="rounded-lg border border-slate-300 px-3.5 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
                   {mutation === "rechunk" ? "Rechunking…" : "Rechunk"}
                 </button>
@@ -222,6 +270,7 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
             </header>
             {!csrfToken && <div role="alert" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Secure session controls are unavailable. Refresh or sign in again.</div>}
             {mutationError && <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">{mutationError}</div>}
+            {preferenceError && <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">{preferenceError}</div>}
             <div className="mt-6 overflow-x-auto border-b border-slate-200" role="tablist" aria-label="Document details">
               <div className="flex min-w-max gap-1">
                 {(["overview", "pages", "chunks", "processing"] as DetailTab[]).map((tab) => (
@@ -246,6 +295,15 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
               onCancel={() => setPendingMutation(null)}
               onConfirm={() => { if (pendingMutation) void runMutation(pendingMutation); }}
             />
+            <ConfirmDialog
+              open={preferenceAction !== null}
+              title={preferenceAction === "archive" ? "Remove from my workspace" : "Restore document"}
+              message={preferenceAction === "archive" ? "Remove this document from your workspace? This will not delete the document for other authorized users." : "Restore this document to your workspace?"}
+              confirmLabel={preferenceAction === "archive" ? "Confirm removal" : "Restore"}
+              busy={preferenceBusy}
+              onCancel={() => setPreferenceAction(null)}
+              onConfirm={() => { if (preferenceAction) void runPreferenceAction(preferenceAction); }}
+            />
           </>
         )}
       </div>
@@ -260,10 +318,16 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
           <h2 className="mt-1 text-3xl font-semibold tracking-tight">Documents</h2>
           <p className="mt-2 text-sm text-slate-600">Only documents available to your authenticated teams are shown.</p>
         </div>
-        <button type="button" onClick={() => void loadDocuments()} className="w-fit rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700">Refresh list</button>
+        <div className="flex flex-wrap gap-2" aria-label="Document views">
+          <button type="button" aria-pressed={documentView === "active"} onClick={() => setDocumentView("active")} className={`rounded-lg px-4 py-2 text-sm font-semibold ${documentView === "active" ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700"}`}>Active</button>
+          <button type="button" aria-pressed={documentView === "archived"} onClick={() => setDocumentView("archived")} className={`rounded-lg px-4 py-2 text-sm font-semibold ${documentView === "archived" ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700"}`}>Archived</button>
+          <button type="button" onClick={() => void loadDocuments()} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700">Refresh list</button>
+        </div>
       </div>
 
       {!csrfToken && <div role="alert" className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Secure session controls are unavailable. Refresh or sign in again.</div>}
+      {successMessage && <div role="status" className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">{successMessage}</div>}
+      {preferenceError && <div role="alert" className="mt-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">{preferenceError}</div>}
 
       <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <h3 className="text-lg font-semibold">Upload PDF documents</h3>
@@ -278,12 +342,15 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
               {classifications.map((classification) => <option key={classification.id} value={classification.id}>{classification.name}</option>)}
             </select>
           </label>
-          <label className="block text-sm font-medium text-slate-800">Team IDs (optional)
-            <input aria-label="Team IDs" type="text" value={teamIds} onChange={(event) => setTeamIds(event.target.value)} placeholder="1, 2" className="mt-2 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+          <label className="block text-sm font-medium text-slate-800">Teams
+            <select aria-label="Teams" aria-required="true" multiple value={selectedTeamIds.map(String)} onChange={(event) => setSelectedTeamIds(Array.from(event.currentTarget.selectedOptions, (option) => Number(option.value)))} className="mt-2 block min-h-24 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+              {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+            </select>
           </label>
-          <button type="submit" disabled={!csrfToken || uploading || classifications.length === 0} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">{uploading ? "Uploading…" : "Upload selected"}</button>
+          <button type="submit" disabled={!csrfToken || uploading || classifications.length === 0 || teams.length === 0} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">{uploading ? "Uploading…" : "Upload selected"}</button>
         </form>
         {classificationError && <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">{classificationError}</div>}
+        {teamError && <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">{teamError}</div>}
         {files.length > 0 && <p className="mt-3 text-xs text-slate-500">Selected: {files.map((file) => file.name).join(", ")}</p>}
         {uploadError && <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">{uploadError}</div>}
         {uploadResults.length > 0 && (
@@ -296,15 +363,15 @@ export function DocumentsPage({ initialDocumentId = null, onExitDetails }: Docum
       <section className="mt-6">
         {loading && <p className="text-sm text-slate-600">Loading authorized documents…</p>}
         {listError && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">{listError}</div>}
-        {!loading && !listError && documents.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"><h3 className="font-semibold">No authorized documents</h3><p className="mt-2 text-sm text-slate-500">Upload a PDF or ask an administrator about team access.</p></div>}
-        {!loading && !listError && documents.length > 0 && <DocumentTable documents={documents} onOpen={openDocument} />}
+        {!loading && !listError && documents.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"><h3 className="font-semibold">{documentView === "archived" ? "No archived documents" : "No authorized documents"}</h3><p className="mt-2 text-sm text-slate-500">{documentView === "archived" ? "Documents you remove from your workspace will appear here." : "Upload a PDF or ask an administrator about team access."}</p></div>}
+        {!loading && !listError && documents.length > 0 && <DocumentTable documents={documents} onOpen={openDocument} archived={documentView === "archived"} onRestore={(documentId) => void runPreferenceAction("restore", documentId)} restoring={preferenceBusy} />}
       </section>
     </div>
   );
 }
 
-function DocumentTable({ documents, onOpen }: { documents: DocumentRead[]; onOpen: (id: number) => void }) {
-  return <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500"><tr><th className="px-5 py-3">Document</th><th className="px-5 py-3">Classification</th><th className="px-5 py-3">Teams</th><th className="px-5 py-3">Pages</th><th className="px-5 py-3">Uploaded</th></tr></thead><tbody className="divide-y divide-slate-100">{documents.map((document) => <tr key={document.id} className="hover:bg-slate-50"><td className="px-5 py-4"><button type="button" onClick={() => onOpen(document.id)} className="max-w-sm text-left font-semibold text-sky-800 hover:underline">{document.filename}</button><p className="mt-1 text-xs text-slate-500">ID {document.id} · {formatBytes(document.file_size)} · {document.uploader.name}</p></td><td className="px-5 py-4 text-slate-700">{document.classification.name}</td><td className="px-5 py-4 text-slate-600">{document.teams.length ? document.teams.map((team) => team.name).join(", ") : "No teams"}</td><td className="px-5 py-4 text-slate-600">{document.page_count ?? "—"}</td><td className="px-5 py-4 text-slate-600">{formatDate(document.uploaded_at)}</td></tr>)}</tbody></table></div></div>;
+function DocumentTable({ documents, onOpen, archived, onRestore, restoring }: { documents: DocumentRead[]; onOpen: (id: number) => void; archived: boolean; onRestore: (id: number) => void; restoring: boolean }) {
+  return <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500"><tr><th className="px-5 py-3">Document</th><th className="px-5 py-3">Classification</th><th className="px-5 py-3">Teams</th><th className="px-5 py-3">Pages</th><th className="px-5 py-3">Uploaded</th>{archived && <th className="px-5 py-3">Action</th>}</tr></thead><tbody className="divide-y divide-slate-100">{documents.map((document) => <tr key={document.id} className="hover:bg-slate-50"><td className="px-5 py-4"><button type="button" onClick={() => onOpen(document.id)} className="max-w-sm text-left font-semibold text-sky-800 hover:underline">{document.filename}</button><p className="mt-1 text-xs text-slate-500">ID {document.id} · {formatBytes(document.file_size)} · {document.uploader.name}</p></td><td className="px-5 py-4 text-slate-700">{document.classification.name}</td><td className="px-5 py-4 text-slate-600">{document.teams.length ? document.teams.map((team) => team.name).join(", ") : "No teams"}</td><td className="px-5 py-4 text-slate-600">{document.page_count ?? "—"}</td><td className="px-5 py-4 text-slate-600">{formatDate(document.uploaded_at)}</td>{archived && <td className="px-5 py-4"><button type="button" disabled={!onRestore || restoring} onClick={() => onRestore(document.id)} className="rounded-lg border border-sky-300 px-3 py-2 text-sm font-semibold text-sky-800 disabled:opacity-50">Restore</button></td>}</tr>)}</tbody></table></div></div>;
 }
 
 function Overview({ details }: { details: DocumentDetails }) {

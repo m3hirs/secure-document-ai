@@ -1,10 +1,12 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
+class DocumentPreferenceMutation(BaseModel):
+ model_config=ConfigDict(extra="forbid")
 class NamedEntity(BaseModel):
  model_config=ConfigDict(from_attributes=True); id:int; name:str
 class DocumentRead(BaseModel):
  model_config=ConfigDict(from_attributes=True)
- id:int; filename:str; file_type:str; file_size:int; page_count:int|None; uploaded_at:datetime; created_at:datetime; classification:NamedEntity; uploader:NamedEntity; tags:list[NamedEntity]=[]; teams:list[NamedEntity]=[]
+ id:int; filename:str; file_type:str; file_size:int; page_count:int|None; uploaded_at:datetime; created_at:datetime; classification:NamedEntity; uploader:NamedEntity; tags:list[NamedEntity]=[]; teams:list[NamedEntity]=[]; is_archived:bool=False
 
 class ProcessingRead(BaseModel):
  model_config=ConfigDict(from_attributes=True)

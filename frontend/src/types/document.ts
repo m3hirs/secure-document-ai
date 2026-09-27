@@ -15,6 +15,7 @@ export interface DocumentRead {
   uploader: NamedEntity;
   tags: NamedEntity[];
   teams: NamedEntity[];
+  is_archived: boolean;
 }
 
 export interface ProcessingRead {
@@ -85,5 +86,5 @@ export interface DocumentDetails {
 
 export interface UploadOptions {
   classificationId: number;
-  teamIds?: string;
+  teamIds: number[];
 }

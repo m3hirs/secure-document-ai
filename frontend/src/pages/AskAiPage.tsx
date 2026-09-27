@@ -124,6 +124,14 @@ export function AskAiPage({ onOpenDocument }: AskAiPageProps) {
 }
 
 function AnswerResult({ result, onOpenDocument }: { result: RagAnswerRead; onOpenDocument: (documentId: number) => void }) {
+  const sourceGroups = Array.from(
+    result.sources.reduce((groups, source) => {
+      const existing = groups.get(source.document_id) ?? [];
+      existing.push(source);
+      groups.set(source.document_id, existing);
+      return groups;
+    }, new Map<number, RagSourceRead[]>()),
+  );
   return (
     <div className="space-y-6">
       <article className={`rounded-2xl border bg-white p-6 shadow-sm sm:p-7 ${result.insufficient_evidence ? "border-amber-200" : "border-slate-200"}`}>
@@ -136,20 +144,34 @@ function AnswerResult({ result, onOpenDocument }: { result: RagAnswerRead; onOpe
 
       {!result.insufficient_evidence && result.sources.length > 0 && (
         <section>
-          <div className="mb-3 flex items-center justify-between gap-3"><h3 className="text-lg font-semibold">Sources</h3><p className="text-xs text-slate-500">{result.sources.length} authorized source{result.sources.length === 1 ? "" : "s"}</p></div>
-          <div className="grid gap-4 lg:grid-cols-2">{result.sources.map((source) => <SourceCard key={`${source.source_id}-${source.chunk_id}`} source={source} onOpen={() => onOpenDocument(source.document_id)} />)}</div>
+          <div className="mb-3 flex items-center justify-between gap-3"><h3 className="text-lg font-semibold">Sources</h3><p className="text-xs text-slate-500">{sourceGroups.length} source document{sourceGroups.length === 1 ? "" : "s"} · {result.sources.length} supporting passage{result.sources.length === 1 ? "" : "s"}</p></div>
+          <div className="space-y-4">{sourceGroups.map(([documentId, sources]) => <SourceDocumentGroup key={documentId} sources={sources} onOpen={() => onOpenDocument(documentId)} />)}</div>
         </section>
       )}
     </div>
   );
 }
 
-function SourceCard({ source, onOpen }: { source: RagSourceRead; onOpen: () => void }) {
+function SourceDocumentGroup({ sources, onOpen }: { sources: RagSourceRead[]; onOpen: () => void }) {
+  const first = sources[0];
+  if (!first) return null;
   return (
     <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-xs font-bold uppercase tracking-[0.14em] text-sky-700">{source.source_id}</p><button type="button" onClick={onOpen} className="mt-1 break-words text-left font-semibold text-slate-950 hover:text-sky-800 hover:underline">{source.filename}</button></div><span className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800">{source.similarity.toFixed(3)}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button type="button" onClick={onOpen} className="break-words text-left font-semibold text-slate-950 hover:text-sky-800 hover:underline">{first.filename}</button>
+        <span className="text-xs font-semibold text-slate-500">{sources.length} passage{sources.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">{sources.map((source) => <SourceCard key={`${source.source_id}-${source.chunk_id}`} source={source} />)}</div>
+    </article>
+  );
+}
+
+function SourceCard({ source }: { source: RagSourceRead }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+      <div className="flex items-start justify-between gap-3"><p className="text-xs font-bold uppercase tracking-[0.14em] text-sky-700">{source.source_id}</p><span className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800">{source.similarity.toFixed(3)}</span></div>
       <p className="mt-2 text-xs text-slate-500">Document {source.document_id} · Page {source.page_number} · Chunk {source.chunk_id}</p>
       <p className="mt-4 line-clamp-5 whitespace-pre-wrap text-sm leading-6 text-slate-700">{source.snippet}</p>
-    </article>
+    </section>
   );
 }

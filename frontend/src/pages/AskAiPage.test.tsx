@@ -75,6 +75,17 @@ describe("grounded Ask AI", () => {
     expect(onOpenDocument).toHaveBeenCalledWith(31);
   });
 
+  it("groups multiple supporting passages by source document", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      ...groundedAnswer,
+      sources: [source, { ...source, source_id: "S2", chunk_id: 72, page_number: 3 }],
+    }));
+    render(<AskAiPage onOpenDocument={vi.fn()} />);
+    await ask();
+    expect(await screen.findByText("1 source document · 2 supporting passages")).toBeVisible();
+    expect(screen.getByRole("button", { name: "resume.pdf" })).toBeVisible();
+  });
+
   it("renders the exact insufficient-evidence response without sources", async () => {
     const answer = "I could not find enough information in the accessible documents to answer that question.";
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ answer, sources: [], model: "qwen2.5:1.5b", insufficient_evidence: true }));

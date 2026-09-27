@@ -42,7 +42,12 @@ def summarize_document(
     document_id: int,
     user_id: int,
 ) -> dict:
-    """Summarize a document only if the requesting user can access it."""
+    """Summarize a directly requested document after team authorization.
+
+    This is a direct-by-ID action, like document detail, rather than workspace
+    retrieval. Per-user archive state therefore does not grant or revoke this
+    operation; SQL team authorization remains authoritative.
+    """
 
     # SECURITY: Check permission before retrieving document text.
     document = accessible_document(db, document_id, user_id)
