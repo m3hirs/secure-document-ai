@@ -11,6 +11,7 @@ from app.services.rag_service import INSUFFICIENT_EVIDENCE_ANSWER
 
 
 QUESTION = "What local processing control is required?"
+CONFIGURED_MODEL = "hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M"
 
 
 def _answer() -> dict:
@@ -27,7 +28,7 @@ def _answer() -> dict:
                 "similarity": 0.9,
             }
         ],
-        "model": "qwen2.5:1.5b",
+        "model": CONFIGURED_MODEL,
         "insufficient_evidence": False,
     }
 
@@ -129,7 +130,7 @@ def test_insufficient_evidence_result_is_returned_as_success(client):
     insufficient_result = {
         "answer": INSUFFICIENT_EVIDENCE_ANSWER,
         "sources": [],
-        "model": "qwen2.5:1.5b",
+        "model": CONFIGURED_MODEL,
         "insufficient_evidence": True,
     }
     with patch("app.api.rag.answer_question", return_value=insufficient_result):

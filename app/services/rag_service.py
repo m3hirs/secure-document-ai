@@ -19,13 +19,13 @@ from app.services.entity_presence_service import (
 )
 from app.services.llm_service import (
     CONSERVATIVE_CHARS_PER_TOKEN,
-    MODEL_NAME,
     OLLAMA_CONTEXT_TOKENS,
     TECHNOLOGY_CATEGORIES,
     generate_local_categorized_answer,
     generate_local_structured_answer,
+    get_ollama_model_name,
 )
-from app.services.semantic_search_service import semantic_search
+from app.services.semantic_search_service import hybrid_search as semantic_search
 
 
 # This is a deliberately conservative character heuristic, not a token count.
@@ -172,6 +172,7 @@ class RagIntent:
     entity: str | None = None
     document_kind: str | None = None
     category: str | None = None
+    retrieval_query: str | None = None
 
 
 def retrieve_authorized_passages(
@@ -181,10 +182,11 @@ def retrieve_authorized_passages(
     top_k: int = 5,
     document_ids: Sequence[int] | None = None,
 ) -> list[RagSourceRead]:
-    """Return only SQL-authorized semantic passages with stable source IDs.
+    """Return only SQL-authorized hybrid passages with stable source IDs.
 
-    ``semantic_search`` applies document team authorization in its PostgreSQL
-    query, before any chunk text is returned to this service.
+    The hybrid search implementation applies document team authorization and
+    per-user archive exclusion in both PostgreSQL retrieval arms before any
+    chunk text is returned to this service.
     """
     if top_k < 1 or top_k > 10:
         raise ValueError("top_k must be between 1 and 10")
@@ -294,7 +296,12 @@ def classify_rag_intent(question: str) -> RagIntent:
 
     named = detect_named_target_question(question)
     if named is not None:
-        return RagIntent("named_document", named.entity)
+        return RagIntent(
+            "named_document",
+            named.entity,
+            category=classify_question_category(question),
+            retrieval_query=named.topic,
+        )
 
     category = classify_question_category(question)
     if category is not None:
@@ -427,7 +434,7 @@ def _insufficient_evidence_response() -> RagAnswerRead:
     return RagAnswerRead(
         answer=INSUFFICIENT_EVIDENCE_ANSWER,
         sources=[],
-        model=MODEL_NAME,
+        model=get_ollama_model_name(),
         insufficient_evidence=True,
     )
 
@@ -469,7 +476,7 @@ def _validated_structured_answer(
     return RagAnswerRead(
         answer=answer,
         sources=cited_sources,
-        model=MODEL_NAME,
+        model=get_ollama_model_name(),
         insufficient_evidence=False,
     )
 
@@ -566,7 +573,7 @@ def _validated_categorized_answer(
     return RagAnswerRead(
         answer=_format_validated_items(accepted_item_names),
         sources=cited_sources,
-        model=MODEL_NAME,
+        model=get_ollama_model_name(),
         insufficient_evidence=False,
     )
 
@@ -698,6 +705,16 @@ def answer_question(
             user_id=user_id,
             entity=intent.entity,
         )
+        if resolution.ambiguous:
+            return RagAnswerRead(
+                answer=(
+                    "Multiple accessible documents match that name. "
+                    "Please clarify the document."
+                ),
+                sources=[],
+                model="deterministic-lexical",
+                insufficient_evidence=True,
+            )
         if not resolution.document_ids:
             return _insufficient_evidence_response()
         named_document_ids = resolution.document_ids
@@ -720,7 +737,7 @@ def answer_question(
         source.source_id
         for source in selected_context.sources
     ]
-    requested_category = intent.category if intent.kind == "category" else None
+    requested_category = intent.category
 
     if requested_category is None:
         model_output = generate_local_structured_answer(

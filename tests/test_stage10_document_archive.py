@@ -294,7 +294,7 @@ def test_semantic_search_statement_applies_archive_and_team_filters_before_resul
 
 def test_hybrid_search_statement_applies_active_workspace_filter():
     db = Mock()
-    db.execute.return_value.all.return_value = []
+    db.scalars.return_value.all.return_value = []
     parsed = ParsedSearch(
         topic="workspace evidence",
         file_type="application/pdf",
@@ -312,13 +312,19 @@ def test_hybrid_search_statement_applies_active_workspace_filter():
             return_value=SimpleNamespace(
                 embedding_version="test-v1",
                 semantic_search_min_similarity=0.70,
+                semantic_search_max_top_k=50,
             ),
         ),
-        patch("app.services.document_search_service.embed_query", return_value=[0.0] * 384),
+        patch(
+            "app.services.document_search_service.hybrid_search",
+            return_value=[
+                SearchResult(31, "workspace.pdf", 1, 311, "workspace evidence", 0.9)
+            ],
+        ),
     ):
         assert search_documents(db, 23, parsed, 1, 10) == []
 
-    statement = db.execute.call_args.args[0]
+    statement = db.scalars.call_args.args[0]
     compiled = statement.compile()
     sql = str(compiled).casefold()
     assert "user_document_preferences" in sql

@@ -274,7 +274,7 @@ describe("authentication UI", () => {
       const path = new URL(String(input)).pathname;
       if (path === "/auth/me") return jsonResponse(authenticatedUser);
       if (path === "/auth/csrf") return jsonResponse({ csrf_token: "rotated-memory-only" });
-      if (path === "/documents/ask") return jsonResponse({ answer: "Python is listed.", sources: [{ source_id: "S1", document_id: 31, filename: "resume.pdf", page_number: 1, chunk_id: 9, snippet: "Synthetic source", similarity: 0.9 }], model: "qwen2.5:1.5b", insufficient_evidence: false });
+      if (path === "/documents/ask") return jsonResponse({ answer: "Python is listed.", sources: [{ source_id: "S1", document_id: 31, filename: "resume.pdf", page_number: 1, chunk_id: 9, snippet: "Synthetic source", similarity: 0.9 }], model: "hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M", insufficient_evidence: false });
       if (path === "/documents") return jsonResponse([document]);
       if (path === "/documents/31") return jsonResponse(document);
       if (path.endsWith("/processing")) return jsonResponse({ document_id: 31, filename: "resume.pdf", processing_status: "processed", page_count: 1, extracted_text_length: 10, text_page_count: 1, image_count: 0, ocr_page_count: 0, processing_started_at: null, processed_at: null, processing_error: null });

@@ -4,9 +4,9 @@ import re
 from typing import Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from app.core.config import get_settings
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
-MODEL_NAME = "qwen2.5:1.5b"
-# Conservative local context policy for qwen2.5:1.5b on a 4 GB GPU.
+# Conservative context policy for the configured local Ollama LLM.
 OLLAMA_CONTEXT_TOKENS = 4096
 SUMMARY_OUTPUT_TOKENS = 200
 ANSWER_OUTPUT_TOKENS = 400
@@ -31,6 +31,11 @@ class LocalLLMError(Exception):
     """Raised when local LLM inference fails."""
 
 
+def get_ollama_model_name() -> str:
+    """Return the configured local Ollama model identifier."""
+    return get_settings().ollama_model_name
+
+
 def generate_local_summary(document_text: str) -> str:
     """Summarize supplied text using the locally running Ollama model."""
     if not document_text.strip():
@@ -46,7 +51,7 @@ def generate_local_summary(document_text: str) -> str:
         f"Document:\n{document_text}"
     )
     payload = {
-        "model": MODEL_NAME,
+        "model": get_ollama_model_name(),
         "prompt": prompt,
         "stream": False,
         "options": {
@@ -121,7 +126,7 @@ def generate_local_answer(
         f"{context}"
     )
     payload = {
-        "model": MODEL_NAME,
+        "model": get_ollama_model_name(),
         "prompt": prompt,
         "stream": False,
         "options": {
@@ -217,7 +222,7 @@ def generate_local_structured_answer(
         f"{context}"
     )
     payload = {
-        "model": MODEL_NAME,
+        "model": get_ollama_model_name(),
         "prompt": prompt,
         "format": output_schema,
         "stream": False,
@@ -359,7 +364,7 @@ def generate_local_categorized_answer(
         f"{context}"
     )
     payload = {
-        "model": MODEL_NAME,
+        "model": get_ollama_model_name(),
         "prompt": prompt,
         "format": output_schema,
         "stream": False,

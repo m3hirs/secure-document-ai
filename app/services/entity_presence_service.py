@@ -6,12 +6,18 @@ import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import Document, DocumentChunk, DocumentPage
 from app.schemas.rag import RagSourceRead
+from app.services.query_normalization import (
+    document_name_aliases,
+    normalize_document_name,
+    normalize_literal_text,
+)
 from app.services.semantic_search_service import document_active_workspace_clause
 
 
@@ -65,39 +71,122 @@ _COUNT_PATTERNS = (
     ),
 )
 
-_NAMED_TARGET_PATTERNS = (
+_NAMED_TARGET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"^\s*(?:give\s+me\s+)?(?:a\s+)?summary\s+of\s+"
+            r"(?P<entity>.+?)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "summary",
+    ),
+    (
+        re.compile(
+            r"^\s*summari[sz]e\s+(?P<entity>.+?)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "summary",
+    ),
+    (
+        re.compile(
+            r"^\s*tell\s+me\s+about\s+(?P<entity>.+?)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "overview",
+    ),
+    (
+        re.compile(
+            r"^\s*what\s+is\s+in\s+(?P<entity>.+?)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "contents",
+    ),
+    (
+        re.compile(
+            r"^\s*explain\s+(?:the\s+)?document\s+(?:called|named)\s+"
+            r"(?P<entity>.+?)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "explanation",
+    ),
+    (
+        re.compile(
+            r"^\s*information\s+from\s+(?P<entity>.+?)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "information",
+    ),
+    (
+        re.compile(
+            r"^\s*(?P<entity>.+?\s+resum)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "contents",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:what\s+)?(?P<topic>technologies|skills|projects|experience|"
+            r"programming\s+languages|(?:machine\s+learning|ml)\s+"
+            r"(?:frameworks|libraries))\s+(?:are\s+)?(?:listed\s+)?"
+            r"(?:in|of)\s+(?P<entity>.+?)\s*[?.!]*\s*$",
+            re.IGNORECASE,
+        ),
+        "topic",
+    ),
+    # Retained conservative legacy shapes.
+    (
     re.compile(
         r"^\s*summarize\s+(?P<entity>.+?)\s+(?:resume|pdf|document)\s*[?.!]*\s*$",
         re.IGNORECASE,
     ),
+        "summary",
+    ),
+    (
     re.compile(
         r"^\s*give\s+me\s+(?:a\s+)?summary\s+of\s+(?P<entity>.+?)\s+"
         r"(?:resume|pdf|document)\s*[?.!]*\s*$",
         re.IGNORECASE,
     ),
+        "summary",
+    ),
+    (
     re.compile(
         r"^\s*what\s+(?:technologies|skills|projects|experience)\s+(?:are\s+)?(?:listed\s+)?"
         r"(?:in|of)\s+(?P<entity>.+?)\s+(?:resume|pdf|document)\s*[?.!]*\s*$",
         re.IGNORECASE,
     ),
+        "topic",
+    ),
+    (
     re.compile(
         r"^\s*what\s+(?:technologies|skills|projects|experience)\s+(?:are\s+)?(?:listed\s+)?"
         r"(?:in|of)\s+(?P<entity>.+?)(?:['’]s)\s+(?:resume|pdf|document)\s*[?.!]*\s*$",
         re.IGNORECASE,
     ),
+        "topic",
+    ),
+    (
     re.compile(
         r"^\s*tell\s+me\s+about\s+(?P<entity>.+?)\s+"
         r"(?:resume|pdf|document)\s*[?.!]*\s*$",
         re.IGNORECASE,
     ),
+        "overview",
+    ),
+    (
     re.compile(
         r"^\s*(?:skills|projects|experience)\s+(?:in|of)\s+"
         r"(?P<entity>.+?)(?:\s+(?:resume|pdf|document))?\s*[?.!]*\s*$",
         re.IGNORECASE,
     ),
+        "topic",
+    ),
+    (
     re.compile(
         r"^\s*(?P<entity>.+?)\s+(?:resume|pdf|document)\s*[?.!,:;]*\s*$",
         re.IGNORECASE,
+    ),
+        "contents",
     ),
 )
 
@@ -116,6 +205,7 @@ class EntityCountIntent:
 @dataclass(frozen=True)
 class NamedTargetIntent:
     entity: str
+    topic: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,12 +227,13 @@ class EntityCountResult:
 class NamedTargetResolution:
     document_ids: tuple[int, ...]
     exhaustive: bool
+    ambiguous: bool = False
+    match_type: str | None = None
 
 
 def normalize_literal(value: str) -> str:
     """Normalize Unicode, case, and whitespace without fuzzy matching."""
-    normalized = unicodedata.normalize("NFKC", value)
-    return re.sub(r"\s+", " ", normalized).strip().casefold()
+    return normalize_literal_text(value)
 
 
 def normalized_literal_occurs(entity: str, evidence: str) -> bool:
@@ -236,21 +327,46 @@ def detect_entity_count_question(question: str) -> EntityCountIntent | None:
 def detect_named_target_question(question: str) -> NamedTargetIntent | None:
     """Conservatively extract a literal target from content questions."""
     excluded = {"my", "the", "this", "that", "a", "an", "accessible", "current"}
-    for pattern in _NAMED_TARGET_PATTERNS:
+    for pattern, default_topic in _NAMED_TARGET_PATTERNS:
         match = pattern.fullmatch(question)
         if match is None:
             continue
         entity = _clean_entity(match.group("entity"))
+        entity = re.sub(r"\.pdf\s*$", "", entity, flags=re.IGNORECASE)
+        entity = re.sub(
+            r"(?:['’]s)?\s+(?:documents?|pdfs?|resumes?)\s*$",
+            "",
+            entity,
+            flags=re.IGNORECASE,
+        ).strip()
         entity = re.sub(r"(?:['’]s)\s*$", "", entity, flags=re.IGNORECASE).strip()
         words = entity.split()
-        if (
+        normalized_entity = normalize_document_name(entity)
+        has_document_signal = bool(
+            re.search(
+                r"(?:\.pdf\b|\b(?:documents?|pdfs?|resum(?:e)?s?)\b)",
+                question,
+                re.IGNORECASE,
+            )
+        )
+        explicit_document_reference = bool(
+            re.search(r"\b(?:called|named|information\s+from)\b", question, re.IGNORECASE)
+        )
+        topic_reference = default_topic == "topic" and len(words) >= 2
+        invalid_target = (
             not _valid_entity(entity)
-            or not 2 <= len(words) <= 8
+            or not 1 <= len(words) <= 12
             or normalize_literal(entity) in excluded
-            or any(normalize_literal(word) in excluded for word in words)
-        ):
-            continue
-        return NamedTargetIntent(entity=entity)
+            or all(normalize_literal(word) in excluded for word in words)
+            or not normalized_entity
+            or not (has_document_signal or explicit_document_reference or topic_reference)
+        )
+        if invalid_target:
+            # Once an explicit action shape matched, do not let a looser suffix
+            # pattern reinterpret the whole question as a filename.
+            return None
+        topic = match.groupdict().get("topic") or default_topic
+        return NamedTargetIntent(entity=entity, topic=topic)
     return None
 
 
@@ -259,17 +375,65 @@ def resolve_authorized_named_target(
     user_id: int,
     entity: str,
 ) -> NamedTargetResolution:
-    """Resolve a literal only inside the active SQL-authorized page corpus."""
+    """Resolve a target only inside the active SQL-authorized workspace.
+
+    Filename evidence takes precedence over page-content aliases. Conservative
+    fuzzy matching is attempted only after exact filename and content matches.
+    Ambiguous candidates are never silently selected.
+    """
     if not normalize_literal(entity):
         return NamedTargetResolution(document_ids=(), exhaustive=False)
 
-    document_rows = db.execute(
-        select(Document.id, Document.page_count, Document.processing_status)
+    documents = db.scalars(
+        select(Document)
         .where(document_active_workspace_clause(user_id))
         .order_by(Document.id)
     ).all()
-    if not document_rows:
+    if not documents:
         return NamedTargetResolution(document_ids=(), exhaustive=True)
+
+    raw_target = unicodedata.normalize("NFKC", entity).strip().casefold()
+    normalized_target = normalize_document_name(entity, strip_extension=False)
+    target_aliases = set(document_name_aliases(entity))
+
+    exact_filename = [
+        document.id
+        for document in documents
+        if unicodedata.normalize("NFKC", document.filename).strip().casefold() == raw_target
+    ]
+    if exact_filename:
+        return NamedTargetResolution(
+            document_ids=tuple(exact_filename) if len(exact_filename) == 1 else (),
+            exhaustive=True,
+            ambiguous=len(exact_filename) > 1,
+            match_type="exact_filename",
+        )
+
+    normalized_filename = [
+        document.id
+        for document in documents
+        if normalize_document_name(document.filename, strip_extension=False) == normalized_target
+    ]
+    if normalized_filename:
+        return NamedTargetResolution(
+            document_ids=tuple(normalized_filename) if len(normalized_filename) == 1 else (),
+            exhaustive=True,
+            ambiguous=len(normalized_filename) > 1,
+            match_type="normalized_filename",
+        )
+
+    basename_matches = [
+        document.id
+        for document in documents
+        if target_aliases.intersection(document_name_aliases(document.filename))
+    ]
+    if basename_matches:
+        return NamedTargetResolution(
+            document_ids=tuple(basename_matches) if len(basename_matches) == 1 else (),
+            exhaustive=True,
+            ambiguous=len(basename_matches) > 1,
+            match_type="normalized_basename",
+        )
 
     page_rows = db.execute(
         select(DocumentPage, Document)
@@ -282,14 +446,57 @@ def resolve_authorized_named_target(
         document.processing_status == "processed"
         and document.page_count is not None
         and page_counts[document.id] == document.page_count
-        for document in document_rows
+        for document in documents
     ) and all(page.has_text for page, _document in page_rows)
-    document_ids = tuple(sorted({
+
+    content_aliases = [
+        alias
+        for alias in target_aliases
+        if alias and alias not in {"document", "pdf", "resume"}
+    ]
+    content_ids = tuple(sorted({
         page.document_id
         for page, _document in page_rows
-        if normalized_literal_occurs(entity, page.extracted_text or "")
+        if any(
+            normalized_literal_occurs(alias, page.extracted_text or "")
+            for alias in content_aliases
+        )
     }))
-    return NamedTargetResolution(document_ids=document_ids, exhaustive=exhaustive)
+    if content_ids:
+        return NamedTargetResolution(
+            document_ids=content_ids if len(content_ids) == 1 else (),
+            exhaustive=exhaustive,
+            ambiguous=len(content_ids) > 1,
+            match_type="content_alias",
+        )
+
+    target_key = next(iter(document_name_aliases(entity)), "")
+    fuzzy_scores: list[tuple[float, int]] = []
+    target_tokens = set(target_key.split())
+    for document in documents:
+        best = 0.0
+        for alias in document_name_aliases(document.filename):
+            if not target_tokens.intersection(alias.split()):
+                continue
+            best = max(best, SequenceMatcher(None, target_key, alias).ratio())
+        if best >= 0.86:
+            fuzzy_scores.append((best, document.id))
+
+    if not fuzzy_scores:
+        return NamedTargetResolution(document_ids=(), exhaustive=exhaustive)
+    fuzzy_scores.sort(key=lambda item: (-item[0], item[1]))
+    best_score = fuzzy_scores[0][0]
+    plausible = [
+        document_id
+        for score, document_id in fuzzy_scores
+        if best_score - score <= 0.03
+    ]
+    return NamedTargetResolution(
+        document_ids=(plausible[0],) if len(plausible) == 1 else (),
+        exhaustive=exhaustive,
+        ambiguous=len(plausible) > 1,
+        match_type="fuzzy_filename",
+    )
 
 
 def search_authorized_entity_count(

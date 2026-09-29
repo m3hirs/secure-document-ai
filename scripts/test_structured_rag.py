@@ -17,9 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.core.config import get_settings
 from app.db.database import SessionLocal
 from app.services.llm_service import (
-    MODEL_NAME,
     OLLAMA_CONTEXT_TOKENS,
     OLLAMA_GENERATE_URL,
+    get_ollama_model_name,
 )
 from app.services.rag_service import (
     INSUFFICIENT_EVIDENCE_ANSWER,
@@ -223,7 +223,7 @@ def main() -> None:
             f"{selected_context.context}"
         )
         payload = {
-            "model": MODEL_NAME,
+            "model": get_ollama_model_name(),
             "prompt": prompt,
             "format": output_schema,
             "stream": False,

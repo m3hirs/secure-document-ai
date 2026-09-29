@@ -4,6 +4,9 @@ from pydantic import ValidationError
 from app.schemas.rag import RagAnswerRead, RagQuestionRequest
 
 
+CONFIGURED_MODEL = "hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M"
+
+
 def test_question_uses_default_top_k():
     request = RagQuestionRequest(question="What does the architecture describe?")
 
@@ -53,7 +56,7 @@ def test_answer_accepts_verified_source_records():
                 "similarity": 0.91,
             }
         ],
-        model="qwen2.5:1.5b",
+        model=CONFIGURED_MODEL,
         insufficient_evidence=False,
     )
 

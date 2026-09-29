@@ -9,7 +9,7 @@ from app.services.document_search_service import search_documents as search_docu
 from app.services.natural_search_parser import parse_query
 from app.services.entity_presence_service import resolve_authorized_named_target
 from app.services.rag_service import classify_rag_intent
-from app.services.semantic_search_service import semantic_search
+from app.services.semantic_search_service import hybrid_search as semantic_search
 
 router = APIRouter(tags=["search"])
 
@@ -22,6 +22,8 @@ def search_documents(payload: SemanticSearchRequest, db: Session = Depends(get_d
     document_ids = None
     if intent.kind == "named_document":
         resolution = resolve_authorized_named_target(db, principal.user_id, intent.entity or "")
+        if resolution.ambiguous:
+            return {"results": [], "message": "Please clarify the document name."}
         if not resolution.document_ids:
             return {"results": [], "message": "No relevant documents found."}
         document_ids = resolution.document_ids

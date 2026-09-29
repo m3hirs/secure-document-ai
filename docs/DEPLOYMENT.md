@@ -11,7 +11,8 @@ values with reviewed environment-specific values; do not invent domains.
    `python -m alembic current` and `python -m alembic heads`.
 4. Configure secrets outside source control using `docs/ENVIRONMENT.md`.
 5. Provision PostgreSQL with pgvector, Python, Tesseract if OCR is required,
-   Ollama, `qwen2.5:1.5b`, and the offline E5 model cache.
+   Ollama, the `OLLAMA_MODEL_NAME` model (currently Krutrim-2 Instruct 12B
+   `Q4_K_M`), and the offline multilingual E5 model cache.
 6. Verify the service account can read the model cache and read/write only the
    intended document storage directory.
 7. Run backend tests, frontend tests/build, dependency/security scans, and the

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     embedding_dimension: int = 384
     embedding_batch_size: int = 16
     embedding_version: str = "e5-small-v1"
+    ollama_model_name: str = "hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M"
     semantic_search_top_k: int = 10
     semantic_search_max_top_k: int = 50
     semantic_search_min_similarity: float = 0.81
@@ -47,6 +48,8 @@ class Settings(BaseSettings):
             raise ValueError("semantic search limits must be positive and default top_k cannot exceed max_top_k")
         if not 0.0 <= self.semantic_search_min_similarity <= 1.0:
             raise ValueError("SEMANTIC_SEARCH_MIN_SIMILARITY must be between 0 and 1")
+        if not self.ollama_model_name.strip():
+            raise ValueError("OLLAMA_MODEL_NAME must not be empty")
         return self
 
     @model_validator(mode="after")

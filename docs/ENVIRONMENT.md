@@ -16,6 +16,7 @@ below are placeholders only. Never commit real credentials.
 | `EMBEDDING_DIMENSION` | pgvector/model dimension | Optional | `384` | Current implementation requires 384 |
 | `EMBEDDING_BATCH_SIZE` | Local encoding batch size | Optional | `16` | Tune only after resource testing |
 | `EMBEDDING_VERSION` | Stored embedding version | Optional | `e5-small-v1` | Coordinate changes with re-embedding |
+| `OLLAMA_MODEL_NAME` | Local Ollama generation model identifier | Optional | `hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M` | Pre-provision the reviewed local model; current build is Krutrim-2 Instruct 12B Q4_K_M |
 | `SEMANTIC_SEARCH_TOP_K` | Default semantic result count | Optional | `10` | Must not exceed maximum |
 | `SEMANTIC_SEARCH_MAX_TOP_K` | Maximum semantic result count | Optional | `50` | Positive integer |
 | `SEMANTIC_SEARCH_MIN_SIMILARITY` | Minimum cosine similarity retained by semantic/hybrid retrieval | Optional | `0.81` | Range 0–1; higher is stricter. API score is `1 - pgvector cosine distance` for normalized E5 vectors |
@@ -38,9 +39,11 @@ a conservative lexical-support gate for unscoped Latin-script queries. Re-run
 `scripts/calibrate_semantic_relevance.py` and validate with approved internal
 queries before changing the value for a deployment corpus.
 
-The Ollama URL (`127.0.0.1:11434`), model (`qwen2.5:1.5b`), context budget,
-and deterministic generation settings are currently local application
-constants, not environment variables.
+Ollama remains the local inference runtime at `127.0.0.1:11434`.
+`OLLAMA_MODEL_NAME` selects the installed generation model; the current default
+is Krutrim-2 Instruct 12B `Q4_K_M`. Context budgets and deterministic generation
+settings remain application constants. RAG authorization, pgvector retrieval,
+and multilingual E5 embeddings are independent of the selected generation model.
 
 ## Frontend
 

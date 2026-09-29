@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 
 import { AskAiPage } from "./AskAiPage";
 
+const configuredModel = "hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M";
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -20,7 +22,7 @@ const source = {
 const groundedAnswer = {
   answer: "Python and Java are listed in the document.",
   sources: [source],
-  model: "qwen2.5:1.5b",
+  model: configuredModel,
   insufficient_evidence: false,
 };
 
@@ -50,7 +52,7 @@ describe("grounded Ask AI", () => {
     await user.click(screen.getByRole("button", { name: "Ask accessible documents" }));
 
     expect(await screen.findByText(groundedAnswer.answer)).toBeVisible();
-    expect(screen.getByText("Model: qwen2.5:1.5b")).toBeVisible();
+    expect(screen.getByText(`Model: ${configuredModel}`)).toBeVisible();
     expect(screen.getByText("S1")).toBeVisible();
     expect(screen.getByText("resume.pdf")).toBeVisible();
     expect(screen.getByText(source.snippet)).toBeVisible();
@@ -88,7 +90,7 @@ describe("grounded Ask AI", () => {
 
   it("renders the exact insufficient-evidence response without sources", async () => {
     const answer = "I could not find enough information in the accessible documents to answer that question.";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ answer, sources: [], model: "qwen2.5:1.5b", insufficient_evidence: true }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ answer, sources: [], model: configuredModel, insufficient_evidence: true }));
     render(<AskAiPage onOpenDocument={vi.fn()} />);
     await ask("What unsupported fact is present?");
     expect(await screen.findByText(answer)).toBeVisible();

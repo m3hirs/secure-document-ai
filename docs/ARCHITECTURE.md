@@ -68,15 +68,26 @@ boundary.
 
 ## Search flow
 
-Metadata search uses deterministic parsed filters. Semantic search embeds the
-query locally and executes vector similarity against chunks joined to the
-authorization predicate. Hybrid search combines these mechanisms without
-retrieving unrestricted chunks for later filtering.
+Metadata search uses deterministic parsed filters. General content search runs
+two independent PostgreSQL-authorized retrieval arms: normalized lexical
+filename/chunk matching and multilingual E5 pgvector similarity. Both apply
+team authorization and the current user's archive exclusion before returning
+text. Results are deduplicated and fused with weighted reciprocal rank fusion;
+exact lexical evidence is preferred without comparing lexical and cosine raw
+scores directly. Strong semantic-only evidence remains available for genuine
+topic and multilingual queries, while weak semantic-only neighbors fail closed.
+
+Named-document requests are parsed deterministically into a target and an
+action/topic. The target is resolved only within the active authorized
+workspace using exact filename, normalized filename/basename, safe aliases,
+and finally conservative fuzzy matching. Zero matches fail closed and multiple
+plausible matches require clarification; vector similarity never proves that a
+named document exists.
 
 ## RAG flow
 
 1. The authenticated principal's user ID is passed internally to authorized
-   semantic retrieval.
+   hybrid retrieval.
 2. Bounded context selection preserves authorized source metadata and stays
    below a conservative context budget.
 3. The selected passages are explicitly marked as untrusted reference data.

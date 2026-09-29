@@ -53,7 +53,7 @@ The detailed identity, upload, search, RAG, and CSRF flows are in
 - PostgreSQL, psycopg2, pgvector
 - PyMuPDF, Pillow, pytesseract/Tesseract
 - sentence-transformers with multilingual E5
-- Local Ollama using `qwen2.5:1.5b`
+- Local Ollama using Krutrim-2 Instruct 12B (`Q4_K_M`)
 - React, TypeScript, React Router, Vite, Tailwind CSS
 - pytest, Vitest, and Testing Library
 
@@ -64,7 +64,7 @@ The tested dependency inventory is in [DEPENDENCIES.md](docs/DEPENDENCIES.md).
 - Python 3.11 or newer
 - PostgreSQL with pgvector (the current Windows installation may use port 1710)
 - Node.js and pnpm
-- Ollama with `qwen2.5:1.5b` already installed
+- Ollama with the configured Krutrim-2 Instruct 12B model already installed
 - Local multilingual E5 model cache
 - Tesseract when OCR is required
 
@@ -108,14 +108,18 @@ or administrator.
 
 ## Ollama setup
 
-Ollama must listen locally on `127.0.0.1:11434` and have
-`qwen2.5:1.5b` available. Model installation is an operator step:
+Ollama is the local inference runtime and must listen on
+`127.0.0.1:11434`. The currently configured LLM is Krutrim-2 Instruct
+12B using the `Q4_K_M` local build. Model installation is an operator step:
 
 ```powershell
-ollama pull qwen2.5:1.5b
+ollama pull hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M
 ```
 
-Do not download models automatically during application startup.
+Set `OLLAMA_MODEL_NAME` to the exact locally installed Ollama model identifier.
+Do not download models automatically during application startup. The RAG and
+multilingual E5 embedding architecture is model-independent; changing the local
+generation model does not change pgvector retrieval or stored embeddings.
 
 ## Frontend setup
 

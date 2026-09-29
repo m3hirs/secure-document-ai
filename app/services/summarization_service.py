@@ -8,6 +8,7 @@ from app.db.models import DocumentPage
 from app.services.llm_service import (
     MAX_SUMMARY_INPUT_CHARACTERS,
     generate_local_summary,
+    get_ollama_model_name,
 )
 from app.services.semantic_search_service import accessible_document
 
@@ -86,7 +87,7 @@ def summarize_document(
         "document_id": document.id,
         "filename": document.filename,
         "summary": summary,
-        "model": "qwen2.5:1.5b",
+        "model": get_ollama_model_name(),
         "source_characters": len(document_text),
         "truncated": truncated,
     }

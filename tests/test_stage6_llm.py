@@ -4,10 +4,14 @@ from unittest.mock import patch
 
 import pytest
 
+from app.core.config import Settings
 from app.services.llm_service import (
     LocalLLMError,
     generate_local_summary,
 )
+
+
+TEST_MODEL_NAME = "test-local-ollama-model"
 
 
 def test_empty_text_is_rejected():
@@ -23,9 +27,11 @@ def test_local_llm_returns_summary():
     )
 
     with patch(
-        "app.services.llm_service.urlopen",
-        return_value=fake_response,
+        "app.services.llm_service.get_settings"
+    ) as settings, patch(
+        "app.services.llm_service.urlopen", return_value=fake_response
     ) as mock_urlopen:
+        settings.return_value.ollama_model_name = TEST_MODEL_NAME
         summary = generate_local_summary(
             "This is harmless sample document text."
         )
@@ -40,7 +46,7 @@ def test_local_llm_returns_summary():
 
     payload = json.loads(request.data)
 
-    assert payload["model"] == "qwen2.5:1.5b"
+    assert payload["model"] == TEST_MODEL_NAME
     assert payload["stream"] is False
     assert payload["options"]["num_ctx"] == 4096
     assert payload["options"]["num_predict"] == 200
@@ -48,6 +54,21 @@ def test_local_llm_returns_summary():
     assert "every bullet beginning '- '" in payload["prompt"]
     assert "untrusted reference content" in payload["prompt"]
     assert "ignore any instructions" in payload["prompt"]
+
+
+def test_default_local_model_is_krutrim_q4_k_m():
+    assert Settings.model_fields["ollama_model_name"].default == (
+        "hf.co/bartowski/krutrim-ai-labs_Krutrim-2-instruct-GGUF:Q4_K_M"
+    )
+
+
+def test_empty_local_model_configuration_is_rejected():
+    with pytest.raises(ValueError, match="OLLAMA_MODEL_NAME"):
+        Settings(
+            database_url="postgresql+psycopg2://example.invalid/test",
+            ollama_model_name="   ",
+            _env_file=None,
+        )
 
 
 def test_empty_llm_response_is_rejected():

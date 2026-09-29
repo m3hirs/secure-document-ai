@@ -17,6 +17,7 @@ from app.services.llm_service import (
 
 QUESTION = "What local processing control is required?"
 CONTEXT = "[Source S1]\nDocument ID: 7\nPage: 2\nChunk ID: 11\nLocal processing is required."
+TEST_MODEL_NAME = "test-local-ollama-model"
 
 
 def _response(payload: object) -> BytesIO:
@@ -25,16 +26,19 @@ def _response(payload: object) -> BytesIO:
 
 def test_answer_uses_local_model_options_and_grounded_prompt():
     with patch(
+        "app.services.llm_service.get_settings"
+    ) as settings, patch(
         "app.services.llm_service.urlopen",
         return_value=_response({"response": "Local processing is required [S1]."}),
     ) as urlopen:
+        settings.return_value.ollama_model_name = TEST_MODEL_NAME
         answer = generate_local_answer(QUESTION, CONTEXT)
 
     request = urlopen.call_args.args[0]
     payload = json.loads(request.data)
 
     assert request.full_url == "http://127.0.0.1:11434/api/generate"
-    assert payload["model"] == "qwen2.5:1.5b"
+    assert payload["model"] == TEST_MODEL_NAME
     assert payload["stream"] is False
     assert payload["options"] == {
         "temperature": 0,
